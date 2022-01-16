@@ -28,7 +28,7 @@ t0 = time.time()
 
 
 ### KNOBS ###
-LATTICE_X = 10  # lattice dimensions
+LATTICE_X = 3  # lattice dimensions
 LATTICE_Y = 100  # lattice dimensions
 SAR = 1 / 3  # slab aspect ratio (y/x)
 MEAN_SLAB_HEIGHT = 3  # mean number of slabs/lattice point
@@ -189,8 +189,12 @@ if __name__ == "__main__":
         ix = int(np.round((LATTICE_X - 1) * np.random.rand()))
         iy = int(np.round((LATTICE_Y - 1) * np.random.rand()))
 
+        print(f"picked {ix}, {iy}")
+
         # if the substrate is not exposed:
         if h[ix, iy] > 0:
+
+            print("substrate not exposed")
 
             # compute the upwind distance and angles to each lattice cell
             dUpwind = (iy - y) % LATTICE_Y
@@ -199,8 +203,12 @@ if __name__ == "__main__":
             # if not in the shadow zone
             if np.nansum(thetas > SHADOW_ANGLE) == 0:
 
+                print("not in the shadow zone")
+
                 # remove the slab
                 h[ix, iy] = h[ix, iy] - 1
+
+                print(f"removed slab {ix}, {iy}")
 
                 # retain original indices, since they may be mutated in the repose step
                 ix0, iy0 = ix, iy
@@ -211,6 +219,7 @@ if __name__ == "__main__":
                     h, ix0, iy0, stable = enforce_angle_of_repose(
                         h, ix0, iy0, mode="remove"
                     )
+                    print(f"slab moved to {ix0}, {iy0} through avalanching")
 
                 # slab saltation step
                 transport = True
@@ -218,6 +227,8 @@ if __name__ == "__main__":
                     iy = iy + L
                     if iy > LATTICE_Y - 1:
                         iy = iy % LATTICE_Y
+
+                    print(f"slab saltated to iy={iy}")
 
                     # compute the upwind distance and angles to each lattice cell
                     dUpwind = (iy - y) % LATTICE_Y
@@ -227,23 +238,34 @@ if __name__ == "__main__":
                     if np.nansum(thetas > SHADOW_ANGLE) > 0:
                         h[ix, iy] += 1
                         transport = False
+                        print(f"deposited in shadow zone at {ix}, {iy}")
 
                     # if the cell contains one or more sand slabs, deposit with probability P=P_SAND
                     elif h[ix, iy] > 0:
                         if np.random.rand() < P_SAND:
                             h[ix, iy] = h[ix, iy] + 1
                             transport = False
+                            print(f"deposited on sand at {ix}, {iy}")
 
                     # if bare substrate, deposit with probability P=P_NOSAND
                     else:
                         if np.random.rand() < P_NOSAND:
                             h[ix, iy] = h[ix, iy] + 1
                             transport = False
+                            print(f"deposited on bare substrate at {ix}, {iy}")
 
                 # check the angle of repose
                 stable = False
                 while not stable:
                     h, ix, iy, stable = enforce_angle_of_repose(h, ix, iy, mode="add")
+
+                    if stable == False:
+                        print(
+                            f"--------------------------saltated slab avalanched to {ix}, {iy}"
+                        )
+
+            else:
+                print("Not moving, in shadow zone")
 
         timestep = timestep + 1 / (LATTICE_X * LATTICE_Y)
 
