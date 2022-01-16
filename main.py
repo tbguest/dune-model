@@ -1,284 +1,262 @@
+"""
+Werner's (1995) dune model, with additions from Momiji et al. (2000).
+
+Dunes are built from piled "slabs" representing sand on a one- or two-dimensional lattice, 
+whose edges are connected with periodic boundary conditions. The number of sand slabs is proportional
+to the surface height, and their movement comprises one-directional transport together with avalanching dynamics.
+A sand slab is individually and randomly chosen for transport (erosion) from among all the slabs on the
+surface. The slab is moved a specific number of lattice sites, thus introducing a transport length (L), and is
+deposited at a site with a probability P_s. If the slab is not deposited, then it is
+repeatedly moved over L sites until deposition. Subsequently another slab is chosen randomly for transport.
+Shadow zones are introduced in the lee of dunes. If a slab is transported to a site in a shadow zone, it is
+deposited with unit probability. This process is repeated to construct the time evolution of the dune-field
+surface.
+
+Assumptions: 
+- Stablitity of the prior bed state, allowing only the neighbours of the cell being acted upon to be checked
+- Wind blows to the north (positive y direction)
+"""
+
 import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-from numpy import random
 
 import time
 
 t0 = time.time()
 
-"""
-Assumptions: 
-- stablitity of the prior bed state, allowing only the neighbours of the cell being 
-acted upon to be checked
-- wind blows to the north (+y)
 
-Think carefully about atan(y/x), and which to apply the aspect ratio to
-"""
+### KNOBS ###
+LATTICE_X = 10  # lattice dimensions
+LATTICE_Y = 100  # lattice dimensions
+SAR = 1 / 3  # slab aspect ratio (y/x)
+MEAN_SLAB_HEIGHT = 3  # mean number of slabs/lattice point
+P_SAND = 0.6  # probability of slab deposition atop another sand slab
+P_NOSAND = 0.4  # probability of slab deposition on bare substrate
+L = 5  # slab saltation length
+REPOSE_ANGLE = np.arctan(2 / 3) * 180 / np.pi  # angle of repose for sand (ca. 33 deg)
+SHADOW_ANGLE = np.arctan(1 / 3) * 180 / np.pi  # angle defining the shadow zone
+TIMESTEPS = 100
 
 
-def compute_slope(dh, dd, ar):
+def compute_slopes(dh, dd, ar):
     """
-    dh: y length [difference in no. of slabs]
-    dd: x length [lattice cells]
-    ar: aspect ratio
+    Args:
+        dh (1xn array): height difference [number of slabs]
+        dd (1xn array): horizonral separation [number of lattice cells]
+        ar (float): aspect ratio (y/x)
     """
-
-    slope = np.arctan(dh / dd * ar) * 180 / np.pi
-
-    return slope
+    slopes = np.arctan2(dh * ar, dd) * 180 / np.pi
+    return slopes
 
 
 def enforce_angle_of_repose(h, ix, iy, mode="add"):
+    """Ensure slope stability threshold is not exceeded after adding or removing a slab.
+
+    Args:
+        h (array): height of sand slabs at all lattice cells.
+        ix, iy (int): indices of cell that has been added to or removed from.
+        mode (str): "add" or "remove"
+
+    Returns:
+        h, ix, iy: updated values if threshold was exceeded.
+        stable (boolean): True if no slab movements were required. 
     """
-    ix, iy: idices of cell that has been added to or removed from
-    Has a slab been removed or added?
 
-    mode = "add" or "remove"
-    """
-
-    nn = {}
-    nnSlopes = {}
-
-    # this is elegant for readability, but makes the following logic more awkward...
-    nn["N"] = [ix, iy + 1]
-    nn["NE"] = [ix + 1, iy + 1]
-    nn["E"] = [ix + 1, iy]
-    nn["SE"] = [ix + 1, iy - 1]
-    nn["S"] = [ix, iy - 1]
-    nn["SW"] = [ix - 1, iy - 1]
-    nn["W"] = [ix - 1, iy]
-    nn["NW"] = [ix - 1, iy + 1]
+    # define indices of neareast neighbour (nn) cells, defined clockwise beginning with compass north (+y)
+    nn = np.zeros((2, 8)).astype(int)
+    nn[:, 0] = ix, iy + 1
+    nn[:, 1] = ix + 1, iy + 1
+    nn[:, 2] = ix + 1, iy
+    nn[:, 3] = ix + 1, iy - 1
+    nn[:, 4] = ix, iy - 1
+    nn[:, 5] = ix - 1, iy - 1
+    nn[:, 6] = ix - 1, iy
+    nn[:, 7] = ix - 1, iy + 1
 
     # apply wrap at boundaries
-    for nbr in nn:
-        if nn[nbr][0] < 0:
-            nn[nbr][0] = nx - 1
-        elif nn[nbr][0] > nx - 1:
-            nn[nbr][0] = 0
-        if nn[nbr][1] < 0:
-            nn[nbr][1] = ny - 1
-        elif nn[nbr][1] > ny - 1:
-            nn[nbr][1] = 0
+    for ind, _ in enumerate(nn[0, :]):
+        if nn[0, ind] < 0:
+            nn[0, ind] = LATTICE_X - 1
+        elif nn[0, ind] > LATTICE_X - 1:
+            nn[0, ind] = 0
+        if nn[1, ind] < 0:
+            nn[1, ind] = LATTICE_Y - 1
+        elif nn[1, ind] > LATTICE_Y - 1:
+            nn[1, ind] = 0
 
-    # compute elevation difference for each neighbouring cell
-    for nbr in nn:
-        dh = h[ix, iy] - h[nn[nbr][0], nn[nbr][1]]
-        nnSlopes[nbr] = compute_slope(dh, 1, slabAspectRatio)
-
-    maxSlope = max(nnSlopes.values())
+    # compute elevation differences and slopes for each neighbouring cell
+    dh = h[ix, iy] - h[nn[0, :], nn[1, :]]
+    nnSlopes = compute_slopes(dh, np.ones(nn.shape[1]), SAR)
+    maxSlopeIndex = np.argmax(np.abs(nnSlopes))
+    maxSlope = nnSlopes[maxSlopeIndex]
 
     stable = True
-    if maxSlope > reposeAngle:
+    if np.abs(maxSlope) > REPOSE_ANGLE:
 
         # are there repeat maxima to choose from?
-        candidates = []
-        for nbr in nnSlopes:
-            if nnSlopes[nbr] == maxSlope:
-                candidates.append(nbr)
+        isMax = maxSlope - nnSlopes == 0
+        nMax = np.sum(isMax)
+        if nMax > 1:
 
-        # if more than one max, choose a fall direction at random
-        iFall = int(np.floor(random.rand() * len(candidates)))
-        # for the vanishingly small chance that rand() returns 1.0
-        if iFall == len(candidates):
-            iFall = iFall - 1
-        ixFall = nn[candidates[iFall]][0]
-        iyFall = nn[candidates[iFall]][1]
+            # if more than one max, choose a fall direction at random
+            iFall = int(np.floor(np.random.rand() * nMax))
+
+            # wrap the index if rand() returns 1.0
+            if iFall == nMax:
+                iFall = 0
+            isMaxIndex = np.where(isMax == True)[0]
+            ixFall = nn[0, isMaxIndex[iFall]]
+            iyFall = nn[1, isMaxIndex[iFall]]
+
+        else:
+            isMaxIndex = np.where(isMax == True)[0]
+            ixFall = nn[0, isMaxIndex[0]]
+            iyFall = nn[1, isMaxIndex[0]]
 
         if mode == "add":
+            # check to ensure angle is positive
+            if nnSlopes[isMaxIndex[0]] < 0:
+                print("Encountered a negative angle on a slab removal step. Invalid.")
+                sys.exit()
+
             h[ix, iy] -= 1
             h[ixFall, iyFall] += 1
+
         elif mode == "remove":
-            # NOTE that if this case is called, we've already ensured than h > 0
+            # check to ensure angle is negative
+            if nnSlopes[isMaxIndex[0]] > 0:
+                print("Encountered a positive angle on a slab addition step. Invalid.")
+                sys.exit()
+
             h[ix, iy] += 1
             h[ixFall, iyFall] -= 1
+
         else:
             print("Invalid mode passed to enforce_angle_of_repose().")
             sys.exit()
 
         ix, iy = ixFall, iyFall
+
         stable = False
 
     return h, ix, iy, stable
 
 
-# define the lattice
-xmax = 1000
-ymax = 1000
-x = np.linspace(0, xmax - 1, xmax)
-y = np.linspace(0, ymax - 1, ymax)
-nx = len(x)
-ny = len(y)
+def initialize_model():
+    """Place slabs at random until the chosen mean slab height is achieved.
+    
+    TODO: Optimize for larger mean heights"""
 
-h = np.zeros((nx, ny))
+    h = np.zeros((LATTICE_X, LATTICE_Y))
 
-# "slab" aspect ratio (< of repose = atan(2/3))
-slabAspectRatio = 1.0 / 3.0
-meanSlabs = 3  # mean number of slabs/lattice point
+    # populate lattice with randomly placed slabs
+    for _ in range(LATTICE_X * LATTICE_Y * MEAN_SLAB_HEIGHT):
 
-Ps = 0.6
-Pns = 0.4
-L = 5
+        # pick a lattice point at random
+        ix = int(np.round((LATTICE_X - 1) * np.random.rand()))
+        iy = int(np.round((LATTICE_Y - 1) * np.random.rand()))
 
-reposeAngle = 30  # degrees
-shadowAngle = 15  # degrees
+        # add a "slab"
+        h[ix, iy] = h[ix, iy] + 1
 
-tmax = 500
+        # check the angle of repose
+        stable = False
+        while not stable:
+            h, ix, iy, stable = enforce_angle_of_repose(h, ix, iy, mode="add")
 
-# fig, ax = plt.subplots(nrows=1, ncols=1)
+    # h = MEAN_SLAB_HEIGHT * np.ones((LATTICE_Y, LATTICE_X))
 
-
-# Setup step:
-
-# populate lattice with randomly placed slabs
-for _ in range(nx * ny * meanSlabs):
-
-    # pick a lattice point at random
-    ix = int(np.round((nx - 1) * random.rand()))
-    iy = int(np.round((ny - 1) * random.rand()))
-
-    # add a "slab"
-    h[ix, iy] = h[ix, iy] + 1
-
-    # check the angle of repose
-    stable = False
-    while not stable:
-        h, ix, iy, stable = enforce_angle_of_repose(h, ix, iy, mode="add")
+    return h
 
 
-# plt.plot(x, h)
-# plt.contour(h)
-# plt.show()
+if __name__ == "__main__":
 
-######## main model ########
+    x = np.linspace(0, LATTICE_X - 1, LATTICE_X)
+    y = np.linspace(0, LATTICE_Y - 1, LATTICE_Y)
+    h = initialize_model()
 
-tcount = 0
-allcount = 0
+    timestep = 0
 
+    # for plotting time evolution in 1-d
+    if LATTICE_X == 1 or LATTICE_Y == 1:
+        fig, ax = plt.subplots(nrows=1, ncols=1)
 
-# def check_shadow_zone():
+    while timestep < TIMESTEPS:
 
-#     return
+        # pick an index at random
+        ix = int(np.round((LATTICE_X - 1) * np.random.rand()))
+        iy = int(np.round((LATTICE_Y - 1) * np.random.rand()))
 
+        # if the substrate is not exposed:
+        if h[ix, iy] > 0:
 
-while tcount < tmax:
+            # compute the upwind distance and angles to each lattice cell
+            dUpwind = (iy - y) % LATTICE_Y
+            thetas = compute_slopes(h - h[ix, iy], dUpwind, SAR)
 
-    # saltation step:
+            # if not in the shadow zone
+            if np.nansum(thetas > SHADOW_ANGLE) == 0:
 
-    # pick an index at random
-    ix = int(np.round((nx - 1) * random.rand()))
-    iy = int(np.round((ny - 1) * random.rand()))
+                # remove the slab
+                h[ix, iy] = h[ix, iy] - 1
 
-    # if the substrate is not exposed:
-    if h[ix, iy] > 0:
+                # retain original indices, since they may be mutated in the repose step
+                ix0, iy0 = ix, iy
 
-        # check if in shadow zone:
+                # check the angle of repose
+                stable = False
+                while not stable:
+                    h, ix0, iy0, stable = enforce_angle_of_repose(
+                        h, ix0, iy0, mode="remove"
+                    )
 
-        """
-        - check all upwind coords (all coords on lattice) to see if threshold angle is met
-        - associate an index with every upwind cell
-        - compute distances and relative heights for each index
+                # slab saltation step
+                transport = True
+                while transport:
+                    iy = iy + L
+                    if iy > LATTICE_Y - 1:
+                        iy = iy % LATTICE_Y
 
-        should omit self to avoid / by 0
-        dUpwind[ix]
+                    # compute the upwind distance and angles to each lattice cell
+                    dUpwind = (iy - y) % LATTICE_Y
+                    thetas = compute_slopes(h - h[ix, iy], dUpwind, SAR)
 
-        """
-
-        # compute the upwind distance and angles to each lattice cell
-        dUpwind = (iy - y) % nx
-        thetas = np.arctan((h - h[ix, iy]) / dUpwind * slabAspectRatio) * 180 / np.pi
-
-        if np.nansum(thetas > shadowAngle) == 0:
-            # not in shadow zone; proceed
-
-            # select grain to saltate
-            h[ix, iy] = h[ix, iy] - 1
-
-            # retain original indices, since they may be mutated in repose step
-            ix0, iy0 = ix, iy
-
-            # check the angle of repose
-            stable = False
-            while not stable:
-                h, ix0, iy0, stable = enforce_angle_of_repose(
-                    h, ix0, iy0, mode="remove"
-                )
-
-            # slab saltation step
-            transport = True
-            while transport:
-                iy = iy + L
-                if iy > ny - 1:
-                    iy = iy % ny
-
-                # compute the upwind distance and angles to each lattice cell
-                dUpwind = (iy - y) % ny
-                thetas = (
-                    np.arctan((h - h[ix, iy]) / dUpwind * slabAspectRatio) * 180 / np.pi
-                )
-
-                if np.nansum(thetas > shadowAngle) > 0:
-                    h[ix, iy] += 1  # deposited with P=1
-                    transport = False
-
-                # if there's sand at the condidate deposition site
-                elif h[ix, iy] > 0:
-
-                    # slab deposited with P=Ps
-                    if random.rand() < Ps:
-                        h[ix, iy] = h[ix, iy] + 1
-                        transport = False
-                else:
-                    # slab deposited with P=Pns
-                    if random.rand() < Pns:
-                        h[ix, iy] = h[ix, iy] + 1
+                    # if in a shadow zone, deposit with unit probability (P=1)
+                    if np.nansum(thetas > SHADOW_ANGLE) > 0:
+                        h[ix, iy] += 1
                         transport = False
 
-            # check the angle of repose
-            stable = False
-            while not stable:
-                h, ix, iy, stable = enforce_angle_of_repose(h, ix, iy, mode="add")
+                    # if the cell contains one or more sand slabs, deposit with probability P=P_SAND
+                    elif h[ix, iy] > 0:
+                        if np.random.rand() < P_SAND:
+                            h[ix, iy] = h[ix, iy] + 1
+                            transport = False
 
-    tcount = tcount + 1 / nx
-    allcount = allcount + 1
+                    # if bare substrate, deposit with probability P=P_NOSAND
+                    else:
+                        if np.random.rand() < P_NOSAND:
+                            h[ix, iy] = h[ix, iy] + 1
+                            transport = False
 
-    # if allcount % 5000 == 1:
-    #     ax.plot(x, h[] + tcount / 20 - 1, "k", "linewidth", 1.5)
+                # check the angle of repose
+                stable = False
+                while not stable:
+                    h, ix, iy, stable = enforce_angle_of_repose(h, ix, iy, mode="add")
 
+        timestep = timestep + 1 / (LATTICE_X * LATTICE_Y)
 
-print((time.time() - t0) / 60, "mins")
+        # for plotting time evolution in 1-d
+        if LATTICE_X == 1 or LATTICE_Y == 1:
+            if timestep % 10 < 1 / (LATTICE_X * LATTICE_Y):
+                ax.plot(y, h[0, :] + timestep - 1, "k")
 
-# plt.plot(y, h[0, :])
-plt.contour(h)
-plt.show()
+    print((time.time() - t0) / 60, "mins")
 
-
-# # probability of deposition
-
-# # check if the slab landed in a shadow zone
-# Icheck = ix - np.arange(1, nx - 2, step=1)
-# iDownwind = np.argwhere(Icheck < 1)
-# for trsh in range(len(iDownwind)):
-#     Icheck[iDownwind[trsh]] = Icheck[iDownwind[trsh]] + nx - 1
-
-# counter = 0
-# for jj in range(len(Icheck)):
-#     if (
-#         np.arcatan2(jj * 3 / 2, h[Icheck[jj]]) > 15 * 180 / np.pi
-#     ):  # (h(Icheck(jj))/(jj*3/2)) > 15*180/pi
-#         counter = counter + 1
-
-# if counter > 0:
-#     h[ix] = h[ix] + 1  # deposited with P=1
-#     transport = False
-
-# elif h[ix] > 0:
-#     if random.rand() < Ps:
-#         h[ix] = h[ix] + 1
-#         transport = False
-# else:
-#     if random.rand() < Pns:
-#         h[ix] = h[ix] + 1
-#         transport = False
-
+    fig2, ax2 = plt.subplots(nrows=1, ncols=1)
+    if LATTICE_X == 1 or LATTICE_Y == 1:
+        ax2.plot(y, h[0, :])
+    else:
+        ax2.contour(h)
+    plt.show()
