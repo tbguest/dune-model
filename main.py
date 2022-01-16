@@ -17,27 +17,25 @@ Assumptions:
 - Wind blows to the north (positive y direction)
 """
 
-import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-
 import time
 
 t0 = time.time()
 
 
 ### KNOBS ###
-LATTICE_X = 10  # lattice dimensions
-LATTICE_Y = 100  # lattice dimensions
+LATTICE_X = 1  # lattice dimensions
+LATTICE_Y = 1000  # lattice dimensions
 SAR = 1 / 3  # slab aspect ratio (y/x)
-MEAN_SLAB_HEIGHT = 3  # mean number of slabs/lattice point
+MEAN_SLAB_HEIGHT = 10  # mean number of slabs/lattice point
 P_SAND = 0.6  # probability of slab deposition atop another sand slab
 P_NOSAND = 0.4  # probability of slab deposition on bare substrate
 L = 5  # slab saltation length
 REPOSE_ANGLE = np.arctan(2 / 3) * 180 / np.pi  # angle of repose for sand (ca. 33 deg)
-SHADOW_ANGLE = np.arctan(1 / 3) * 180 / np.pi  # angle defining the shadow zone
-TIMESTEPS = 100
+SHADOW_ANGLE = 15  # [deg] angle defining the shadow zone
+TIMESTEPS = 150
 
 
 def compute_slopes(dh, dd, ar):
@@ -181,7 +179,7 @@ if __name__ == "__main__":
 
     # for plotting time evolution in 1-d
     if LATTICE_X == 1 or LATTICE_Y == 1:
-        fig, ax = plt.subplots(nrows=1, ncols=1)
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 3))
 
     while timestep < TIMESTEPS:
 
@@ -249,8 +247,16 @@ if __name__ == "__main__":
 
         # for plotting time evolution in 1-d
         if LATTICE_X == 1 or LATTICE_Y == 1:
-            if timestep % 10 < 1 / (LATTICE_X * LATTICE_Y):
-                ax.plot(y, h[0, :] + timestep - 1, "k")
+            if timestep % 10 < 1 / (LATTICE_X * LATTICE_Y) or timestep == 1 / (
+                LATTICE_X * LATTICE_Y
+            ):
+                ax.plot(y, h[0, :] + timestep - 1, "k", linewidth=2.0)
+
+    ax.set_ylabel("y")
+    ax.set_xlabel("x")
+    ax.set_xlim([np.min(y), np.max(y)])
+    fig.tight_layout()
+    plt.savefig("dunes1d.png")
 
     print((time.time() - t0) / 60, "mins")
 
